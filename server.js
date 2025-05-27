@@ -19,65 +19,55 @@ const supabase = createClient(
 
 // Middleware
 app.use(cors());
-app.use(express.json());
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok' });
-});
-
-// Stripe webhook endpoint
+// --- Stripe Webhook Route FIRST, with express.raw ---
 app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   const signature = req.headers['stripe-signature'];
   const body = req.body;
 
-  console.log('Received webhook request');
-  console.log('Signature:', signature);
-
   if (!signature) {
     console.error('No signature found in request');
-    return res.status(400).send('No signature');
+    return res.status(400).json({ error: 'No signature found in request' });
   }
 
+  if (!process.env.STRIPE_WEBHOOK_SECRET) {
+    console.error('STRIPE_WEBHOOK_SECRET is not configured');
+    return res.status(500).json({ error: 'Webhook secret not configured' });
+  }
+
+  let event;
   try {
-    const event = stripe.webhooks.constructEvent(
+    event = stripe.webhooks.constructEvent(
       body,
       signature,
       process.env.STRIPE_WEBHOOK_SECRET
     );
+  } catch (err) {
+    console.error('Webhook signature verification failed:', err.message);
+    return res.status(400).json({ error: 'Webhook signature verification failed', details: err.message });
+  }
 
-    console.log('Webhook event type:', event.type);
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    // Try to get email robustly
+    const customerEmail = session.customer_email || session.customer_details?.email;
+    if (!customerEmail) {
+      console.error('No customer email found in session:', session);
+      return res.status(400).json({ error: 'No customer email found in session' });
+    }
 
-    if (event.type === 'checkout.session.completed') {
-      const session = event.data.object;
-      console.log('Checkout session:', session);
-      
-      // Get customer email from the session
-      const customerEmail = session.customer_email || session.customer_details?.email;
-      
-      if (!customerEmail) {
-        console.error('No customer email found in session');
-        throw new Error('No customer email found in session');
-      }
-
-      console.log('Creating user for email:', customerEmail);
-
-      // Create a new user in Supabase
+    // Create user in Supabase
+    try {
       const { data: authData, error: authError } = await supabase.auth.admin.createUser({
         email: customerEmail,
         email_confirm: true,
       });
-
-      console.log('Supabase createUser response:', { authData, authError });
-
       if (authError) {
         console.error('Error creating user:', authError);
-        throw authError;
+        return res.status(500).json({ error: 'Error creating user', details: authError.message });
       }
 
-      console.log('User created successfully:', authData.user.id);
-
-      // Create a profile for the user
+      // Create profile
       const { error: profileError } = await supabase
         .from('profiles')
         .insert({
@@ -90,22 +80,25 @@ app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), async
 
       if (profileError) {
         console.error('Error creating profile:', profileError);
-        throw profileError;
+        return res.status(500).json({ error: 'Error creating profile', details: profileError.message });
       }
 
-      console.log('Profile created successfully');
-
-      return res.json({ success: true });
+      return res.json({ success: true, userId: authData.user.id });
+    } catch (err) {
+      console.error('Unexpected error:', err);
+      return res.status(500).json({ error: 'Unexpected error', details: err.message });
     }
-
-    return res.json({ received: true });
-  } catch (err) {
-    console.error('Webhook error:', err);
-    return res.status(400).json({ 
-      error: 'Webhook handler failed', 
-      details: err.message 
-    });
   }
+
+  res.json({ received: true });
+});
+
+// --- All other routes and middleware after ---
+app.use(express.json());
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok' });
 });
 
 // Start server
