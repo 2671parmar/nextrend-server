@@ -67,22 +67,44 @@ app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), async
     }
 
     try {
-      console.log('Attempting to send password reset email...');
-      // Send password reset email using Supabase
-      const { data: resetData, error: resetError } = await supabase.auth.resetPasswordForEmail(customerEmail, {
-        redirectTo: 'https://app.nextrend.ai/reset-password'
+      console.log('Attempting to create user and send invite...');
+      
+      // First create the user
+      const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+        email: customerEmail,
+        email_confirm: true,
+        user_metadata: {
+          subscription_id: session.subscription,
+          subscription_status: 'active'
+        }
       });
 
-      if (resetError) {
-        console.error('Supabase reset password error:', JSON.stringify(resetError, null, 2));
+      if (authError) {
+        console.error('Error creating user:', JSON.stringify(authError, null, 2));
         return res.status(500).json({ 
-          error: 'Error sending reset password email', 
-          details: resetError.message,
-          fullError: resetError
+          error: 'Error creating user', 
+          details: authError.message,
+          fullError: authError
         });
       }
 
-      console.log('Reset password email sent successfully:', JSON.stringify(resetData, null, 2));
+      console.log('User created successfully:', JSON.stringify(authData, null, 2));
+
+      // Then send the invite
+      const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(customerEmail, {
+        redirectTo: 'https://app.nextrend.ai/reset-password'
+      });
+
+      if (inviteError) {
+        console.error('Error sending invite:', JSON.stringify(inviteError, null, 2));
+        return res.status(500).json({ 
+          error: 'Error sending invite', 
+          details: inviteError.message,
+          fullError: inviteError
+        });
+      }
+
+      console.log('Invite sent successfully:', JSON.stringify(inviteData, null, 2));
 
       console.log('Attempting to store subscription info...');
       // Store subscription info in a separate table for later use
