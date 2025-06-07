@@ -67,31 +67,22 @@ app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), async
     }
 
     try {
-      console.log('Attempting to send Supabase invite...');
-      // Send invite email using Supabase
-      const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(customerEmail, {
-        data: {
-          subscription_id: session.subscription,
-          subscription_status: 'active'
-        },
-        options: {
-          redirectTo: 'https://app.nextrend.ai/reset-password',
-          data: {
-            type: 'invite'
-          }
-        }
+      console.log('Attempting to send password reset email...');
+      // Send password reset email using Supabase
+      const { data: resetData, error: resetError } = await supabase.auth.resetPasswordForEmail(customerEmail, {
+        redirectTo: 'https://app.nextrend.ai/reset-password'
       });
 
-      if (inviteError) {
-        console.error('Supabase invite error:', JSON.stringify(inviteError, null, 2));
+      if (resetError) {
+        console.error('Supabase reset password error:', JSON.stringify(resetError, null, 2));
         return res.status(500).json({ 
-          error: 'Error sending invite', 
-          details: inviteError.message,
-          fullError: inviteError
+          error: 'Error sending reset password email', 
+          details: resetError.message,
+          fullError: resetError
         });
       }
 
-      console.log('Invite sent successfully:', JSON.stringify(inviteData, null, 2));
+      console.log('Reset password email sent successfully:', JSON.stringify(resetData, null, 2));
 
       console.log('Attempting to store subscription info...');
       // Store subscription info in a separate table for later use
