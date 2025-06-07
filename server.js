@@ -22,6 +22,9 @@ app.use(cors());
 
 // --- Stripe Webhook Route FIRST, with express.raw ---
 app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  console.log('=== Webhook Request Started ===');
+  console.log('Headers:', JSON.stringify(req.headers, null, 2));
+  
   const signature = req.headers['stripe-signature'];
   const body = req.body;
 
@@ -37,59 +40,92 @@ app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), async
 
   let event;
   try {
+    console.log('Attempting to construct event...');
     event = stripe.webhooks.constructEvent(
       body,
       signature,
       process.env.STRIPE_WEBHOOK_SECRET
     );
+    console.log('Event constructed successfully:', event.type);
   } catch (err) {
     console.error('Webhook signature verification failed:', err.message);
     return res.status(400).json({ error: 'Webhook signature verification failed', details: err.message });
   }
 
   if (event.type === 'checkout.session.completed') {
+    console.log('Processing checkout.session.completed event');
     const session = event.data.object;
-    // Try to get email robustly
+    console.log('Session ID:', session.id);
+    
+    // Get customer email from the session
     const customerEmail = session.customer_email || session.customer_details?.email;
+    console.log('Customer email:', customerEmail);
+    
     if (!customerEmail) {
-      console.error('No customer email found in session:', session);
+      console.error('No customer email found in session:', JSON.stringify(session, null, 2));
       return res.status(400).json({ error: 'No customer email found in session' });
     }
 
-    // Create user in Supabase
     try {
-      const { data: authData, error: authError } = await supabase.auth.admin.createUser({
-        email: customerEmail,
-        email_confirm: true,
-      });
-      if (authError) {
-        console.error('Error creating user:', authError);
-        return res.status(500).json({ error: 'Error creating user', details: authError.message });
-      }
-
-      // Create profile
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .insert({
-          id: authData.user.id,
-          email: customerEmail,
-          subscription_status: 'active',
+      console.log('Attempting to send Supabase invite...');
+      // Send invite email using Supabase
+      const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(customerEmail, {
+        data: {
           subscription_id: session.subscription,
-          created_at: new Date().toISOString(),
-        });
+          subscription_status: 'active'
+        }
+      });
 
-      if (profileError) {
-        console.error('Error creating profile:', profileError);
-        return res.status(500).json({ error: 'Error creating profile', details: profileError.message });
+      if (inviteError) {
+        console.error('Supabase invite error:', JSON.stringify(inviteError, null, 2));
+        return res.status(500).json({ 
+          error: 'Error sending invite', 
+          details: inviteError.message,
+          fullError: inviteError
+        });
       }
 
-      return res.json({ success: true, userId: authData.user.id });
+      console.log('Invite sent successfully:', JSON.stringify(inviteData, null, 2));
+
+      console.log('Attempting to store subscription info...');
+      // Store subscription info in a separate table for later use
+      const { data: subData, error: subError } = await supabase
+        .from('pending_subscriptions')
+        .insert({
+          email: customerEmail,
+          subscription_id: session.subscription,
+          status: 'pending',
+          created_at: new Date().toISOString()
+        })
+        .select();
+
+      if (subError) {
+        console.error('Error storing subscription info:', JSON.stringify(subError, null, 2));
+        // Don't return error here, as the invite was sent successfully
+      } else {
+        console.log('Subscription info stored successfully:', JSON.stringify(subData, null, 2));
+      }
+
+      console.log('=== Webhook Processing Completed Successfully ===');
+      return res.json({ 
+        success: true, 
+        message: 'Invite sent successfully',
+        email: customerEmail,
+        subscriptionId: session.subscription
+      });
+
     } catch (err) {
-      console.error('Unexpected error:', err);
-      return res.status(500).json({ error: 'Unexpected error', details: err.message });
+      console.error('Unexpected error in webhook processing:', err);
+      console.error('Error stack:', err.stack);
+      return res.status(500).json({ 
+        error: 'Unexpected error', 
+        details: err.message,
+        stack: err.stack
+      });
     }
   }
 
+  console.log('Event type not handled:', event.type);
   res.json({ received: true });
 });
 
