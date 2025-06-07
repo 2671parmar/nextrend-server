@@ -73,6 +73,9 @@ app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), async
         data: {
           subscription_id: session.subscription,
           subscription_status: 'active'
+        },
+        options: {
+          redirectTo: 'https://app.nextrend.ai/reset-password'
         }
       });
 
